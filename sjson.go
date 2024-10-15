@@ -427,19 +427,18 @@ func isOptimisticPath(path string) bool {
 //
 // A path is a series of keys separated by a dot.
 //
-//  {
-//    "name": {"first": "Tom", "last": "Anderson"},
-//    "age":37,
-//    "children": ["Sara","Alex","Jack"],
-//    "friends": [
-//      {"first": "James", "last": "Murphy"},
-//      {"first": "Roger", "last": "Craig"}
-//    ]
-//  }
-//  "name.last"          >> "Anderson"
-//  "age"                >> 37
-//  "children.1"         >> "Alex"
-//
+//	{
+//	  "name": {"first": "Tom", "last": "Anderson"},
+//	  "age":37,
+//	  "children": ["Sara","Alex","Jack"],
+//	  "friends": [
+//	    {"first": "James", "last": "Murphy"},
+//	    {"first": "Roger", "last": "Craig"}
+//	  ]
+//	}
+//	"name.last"          >> "Anderson"
+//	"age"                >> 37
+//	"children.1"         >> "Alex"
 func Set(json, path string, value interface{}) (string, error) {
 	return SetOptions(json, path, value, nil)
 }
@@ -573,6 +572,75 @@ func set(jstr, path, raw string,
 	return njson, nil
 }
 
+type val struct {
+	index int
+	res   gjson.Result
+}
+
+func formatVals(result *gjson.Result) ([]val, error) {
+	vals := make([]val, 0, len(result.Indexes))
+	result.ForEach(func(_, vres gjson.Result) bool {
+		vals = append(vals, val{res: vres})
+		return true
+	})
+	if len(result.Indexes) != len(vals) {
+		return vals, errNoChange
+	}
+	for i := 0; i < len(result.Indexes); i++ {
+		vals[i].index = result.Indexes[i]
+	}
+	return vals, nil
+}
+
+func setComplexPathWithGResult(jstr, path string, result gjson.Result, stringify bool) ([]byte, error) {
+	res := gjson.Get(jstr, path)
+	if !res.Exists() || !(res.Index != 0 || len(res.Indexes) != 0) {
+		return []byte(jstr), errNoChange
+	}
+	if res.Index != 0 {
+		njson := []byte(jstr[:res.Index])
+		if stringify {
+			njson = appendStringify(njson, result.Raw)
+		} else {
+			njson = append(njson, []byte(result.Raw)...)
+		}
+		njson = append(njson, jstr[res.Index+len(res.Raw):]...)
+		jstr = string(njson)
+	}
+	if len(res.Indexes) > 0 {
+		vals, err := formatVals(&res)
+		if err != nil {
+			return []byte(jstr), err
+		}
+
+		rvals := make([]gjson.Result, 0)
+		result.ForEach(func(_, vres gjson.Result) bool {
+			rvals = append(rvals, vres)
+			return true
+		})
+
+		offset := 0
+		for index, val := range vals {
+			rval := rvals[index]
+			vres := val.res
+			index := val.index
+			if index+offset < 0 {
+				continue
+			}
+			njson := []byte(jstr[:index+offset])
+			if stringify {
+				njson = appendStringify(njson, rval.Raw)
+			} else {
+				njson = append(njson, rval.Raw...)
+			}
+			njson = append(njson, jstr[index+offset+len(vres.Raw):]...)
+			jstr = string(njson)
+			offset += len(rval.Raw) - len(vres.Raw)
+		}
+	}
+	return []byte(jstr), nil
+}
+
 func setComplexPath(jstr, path, raw string, stringify bool) ([]byte, error) {
 	res := gjson.Get(jstr, path)
 	if !res.Exists() || !(res.Index != 0 || len(res.Indexes) != 0) {
@@ -589,20 +657,9 @@ func setComplexPath(jstr, path, raw string, stringify bool) ([]byte, error) {
 		jstr = string(njson)
 	}
 	if len(res.Indexes) > 0 {
-		type val struct {
-			index int
-			res   gjson.Result
-		}
-		vals := make([]val, 0, len(res.Indexes))
-		res.ForEach(func(_, vres gjson.Result) bool {
-			vals = append(vals, val{res: vres})
-			return true
-		})
-		if len(res.Indexes) != len(vals) {
-			return []byte(jstr), errNoChange
-		}
-		for i := 0; i < len(res.Indexes); i++ {
-			vals[i].index = res.Indexes[i]
+		vals, err := formatVals(&res)
+		if err != nil {
+			return []byte(jstr), err
 		}
 		sort.SliceStable(vals, func(i, j int) bool {
 			return vals[i].index > vals[j].index
@@ -667,6 +724,10 @@ func SetBytesOptions(json []byte, path string, value interface{},
 		}
 		raw := *(*string)(unsafe.Pointer(&b))
 		res, err = set(jstr, path, raw, false, false, optimistic, inplace)
+	// only spport one layer for array
+	case gjson.Result:
+		result := value.(gjson.Result)
+		res, err = setComplexPathWithGResult(jstr, path, result, false)
 	case dtype:
 		res, err = set(jstr, path, "", false, true, optimistic, inplace)
 	case string:
