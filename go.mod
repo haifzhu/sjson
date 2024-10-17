@@ -1,4 +1,4 @@
-module github.com/tidwall/sjson
+module github.com/haifzhu/sjson
 
 go 1.14
 
