@@ -589,6 +589,13 @@ func formatVals(result *gjson.Result) ([]val, error) {
 	for i := 0; i < len(result.Indexes); i++ {
 		vals[i].index = result.Indexes[i]
 	}
+	// delete the null value
+	for i := 0; i < len(vals); i++ {
+		if vals[i].res.Raw == "null" {
+			vals = append(vals[:i], vals[i+1:]...)
+			i--
+		}
+	}
 	return vals, nil
 }
 
